@@ -17,7 +17,7 @@ export function GetConfigFields(discoveredBridges: Record<string, string>): Some
 			width: 8,
 			label: 'Pairing Instructions',
 			value:
-				'To pair with a Lutron Smart Bridge, press the pair button on the bridge and then press save within 30 seconds or refresh the page if the connection shows an error',
+				'Select your Lutron Bridge from the dropdown below, or enter in the IP address manually. Then after you hit Save, press the black pairing button on your Lutron Bridge. If it does not pair, turn the connection off and back on to re-initiate pairing, and press the button again.',
 		},
 		{
 			type: 'dropdown',
