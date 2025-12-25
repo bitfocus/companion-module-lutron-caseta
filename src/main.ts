@@ -1,93 +1,43 @@
 import { InstanceBase, runEntrypoint, InstanceStatus, SomeCompanionConfigField } from '@companion-module/base'
-import { GetConfigFields, type ModuleConfig } from './config.js'
+import { GetConfigFields, type ModuleConfig, type ModuleSecrets } from './config.js'
 import { UpdateVariableDefinitions } from './variables.js'
 import { UpgradeScripts } from './upgrades.js'
 import { UpdateActions } from './actions.js'
 import { UpdateFeedbacks } from './feedbacks.js'
-import { PairingClient, BridgeFinder, BridgeNetInfo, LeapClient, SmartBridge } from 'lutron-leap'
+import { PairingClient, BridgeFinder, BridgeNetInfo, LeapClient, SmartBridge, DeviceDefinition } from 'lutron-leap'
 import forge from 'node-forge'
 
 const PAIRING_PORT = 8083
 const LEAP_PORT = 8081
+const UNKNOWN_BRIDGE_ID = 'unknown-bridge-id'
 
-export class ModuleInstance extends InstanceBase<ModuleConfig> {
+export class ModuleInstance extends InstanceBase<ModuleConfig, ModuleSecrets> {
 	config!: ModuleConfig // Setup in init()
+	secrets!: ModuleSecrets
 	discoveredBridges: Record<string, string>
 	bridge?: SmartBridge
-
+	devicesOnBridge: DeviceDefinition[]
 	constructor(internal: unknown) {
 		super(internal)
 		this.discoveredBridges = {}
+		this.devicesOnBridge = []
 	}
 
-	async init(config: ModuleConfig): Promise<void> {
+	async init(config: ModuleConfig, _isFirstInit: boolean, secrets: ModuleSecrets): Promise<void> {
 		this.config = config
+		this.secrets = secrets
 
-		if (this.config.host === undefined || this.config.host === '') {
-			this.updateStatus(InstanceStatus.BadConfig, 'No bridge configured')
-		}
-
-		if (!this.config.bridgeID) {
-			// discover bridges (used for dropdown in config)
-			await this.startDiscovery()
-		}
-
-		// pair and load certs
-		if (this.config.host && !this.config.bridgeID) {
-			this.updateStatus(InstanceStatus.Connecting, 'Pairing with Bridge')
-			await this.pairWithBridge()
-		}
+		// discover bridges (used for dropdown in config)
+		this.log('debug', 'Starting bridge discovery')
+		this.updateStatus(InstanceStatus.Connecting, 'Initializing')
+		await this.startDiscovery()
 
 		// if we have certs, connect to bridge
-		if (this.config.ca && this.config.certificate && this.config.privateKey) {
-			this.updateStatus(InstanceStatus.Connecting, 'Connecting to Bridge')
-
-			const leapClient = new LeapClient(
-				this.config.host,
-				LEAP_PORT,
-				this.config.ca,
-				this.config.privateKey,
-				this.config.certificate,
-			)
-
-			await leapClient.connect().catch((err) => {
-				this.updateStatus(InstanceStatus.ConnectionFailure, `Bridge connection failed: ${err.message}`)
-				this.log('error', `Bridge connection failed: ${err.message}`)
-				return
-			})
-
-			const bridgeID = this.config.bridgeID || this.discoveredBridges[this.config.host]
-			if (bridgeID) {
-				this.bridge = new SmartBridge(bridgeID, leapClient)
-
-				// if this is the first time connecting, save the bridgeID
-				if (!this.config.bridgeID) {
-					this.config.bridgeID = bridgeID
-					this.saveConfig(this.config)
-				}
-				const devices = await this.bridge.getDeviceInfo()
-				devices.forEach((device) => {
-					this.log('info', `Found device: ${device.Name} (model: ${device.ModelNumber}, Type: ${device.DeviceType})`)
-				})
-			} else {
-				// anything to do here? We have an unpaired host
-				this.log('warn', 'No valid bridge id found for configured host. Resetting certificates to repair')
-				this.config.certificate = undefined
-				this.config.privateKey = undefined
-				this.config.ca = undefined
-				this.saveConfig(this.config)
-				this.updateStatus(InstanceStatus.Disconnected, 'No Bridge ID for Paired Host')
-				return
-			}
-
-			this.updateStatus(InstanceStatus.Ok)
+		if (this.secrets.bridgeCerts) {
+			await this.connectToBridge()
 		}
 
-		// refactor into separate function that returns the bridge info?
-		/**
-		 *  got cert request result {"Header":{"StatusCode":"200 OK","ClientTag":"get-cert","ContentType":"signing-result;plurality=single","CorrelationID":"9b07585b-8cc8-4eec-ac03-e2e1a8d4d9bd"},"Body":{"SigningResult":{"Certificate":"-----BEGIN CERTIFICATE-----\nMIIC6TCCAo6gAwIBAgIBATAKBggqhkjOPQQDAjCBgzELMAkGA1UEBhMCVVMxFTAT\nBgNVBAgTDFBlbm5zeWx2YW5pYTEUMBIGA1UEBxMLQ29vcGVyc2J1cmcxJTAjBgNV\nBAoTHEx1dHJvbiBFbGVjdHJvbmljcyBDby4sIEluYy4xIDAeBgNVBAMTF1NtYXJ0\nQnJpZGdlNTA4Q0IxMjE4Q0Q3MB4XDTE1MTAzMTAwMDAwMFoXDTM1MTAyNjAwMDAw\nMFowazEnMCUGA1UEAxMeY29tcGFuaW9uLW1vZHVsZS1sdXRyb24tY2FzZXRhMRww\nGgYKKwYBBAGCuQkBAhMMMDAwMDAwMDAwMDAwMSIwIAYKKwYBBAGCuQkBAwwSZ2V0\nX2x1dHJvbl9jZXJ0LnB5MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA\n26VhRo40yomhWf7Mo1FZQsz3NcpRM5qdpqAdSQJspyJ+M9rXVTO+nTTM4Yg1izPj\npVR1W3w4ePvA4YHJ2X4u2Kq31okuULD5PUvjY3GHVCqnO7/a9MHigHgASwdw6KS5\naqtITeSlbFMIuLjwQVC8ZxThzstv8MDXmVrZNVDoOfSmO8Yy6T/UKb7oTPxmCUia\ndmGMa98L/nkZWZGk3ugWe9DNFkjyE9grqGRilzLaLLrHuSSWiOrXEirxp3ewP4au\ntWyKSlQDhLQt+re/RrYnNIMkkUMGVSImOBJuaUHkVinYWrd4/lPmNdvfZwQI27Ko\nGVDKBMR8wEwjMJUGYl1anQIDAQABoz8wPTAOBgNVHQ8BAf8EBAMCBaAwHQYDVR0l\nBBYwFAYIKwYBBQUHAwEGCCsGAQUFBwMCMAwGA1UdEwEB/wQCMAAwCgYIKoZIzj0E\nAwIDSQAwRgIhALBvB7v2lXgbzQ0CpFGZMcMmR0fJIiSkG1FnPMYSxjAIAiEAyyP4\nzOTJnzFrkpDWfGhVqgtozyQdddGWt8sVf4HSdPc=\n-----END CERTIFICATE-----\n","RootCertificate":"-----BEGIN CERTIFICATE-----\nMIICGjCCAcCgAwIBAgIBATAKBggqhkjOPQQDAjCBgzELMAkGA1UEBhMCVVMxFTAT\nBgNVBAgTDFBlbm5zeWx2YW5pYTEUMBIGA1UEBxMLQ29vcGVyc2J1cmcxJTAjBgNV\nBAoTHEx1dHJvbiBFbGVjdHJvbmljcyBDby4sIEluYy4xIDAeBgNVBAMTF1NtYXJ0\nQnJpZGdlNTA4Q0IxMjE4Q0Q3MB4XDTE1MTAzMTAwMDAwMFoXDTM1MTAyNjAwMDAw\nMFowgYMxCzAJBgNVBAYTAlVTMRUwEwYDVQQIEwxQZW5uc3lsdmFuaWExFDASBgNV\nBAcTC0Nvb3BlcnNidXJnMSUwIwYDVQQKExxMdXRyb24gRWxlY3Ryb25pY3MgQ28u\nLCBJbmMuMSAwHgYDVQQDExdTbWFydEJyaWRnZTUwOENCMTIxOENENzBZMBMGByqG\nSM49AgEGCCqGSM49AwEHA0IABBjBi3p+EEIsfhOmY2n0PAYjtN/gNP8ASn/1N/dV\nM6jmtRcWsCTR9O2LTvXF3wmW0+RD4S2qsqZTffUshXnZUr2jIzAhMA4GA1UdDwEB\n/wQEAwIBvjAPBgNVHRMBAf8EBTADAQH/MAoGCCqGSM49BAMCA0gAMEUCIQCyYhuv\nD9t3eLBSoxXQ2D8QnVVW3WSyLKs2zyB83TOEXgIgC4SMueL1W5LNrqSHZVk741Z1\nzP82q2TLMD/5C5ilY/E=\n-----END CERTIFICATE-----\n"}}}
-		 */
-		this.updateActions() // export actions
+		await this.updateActions() // export actions
 		this.updateFeedbacks() // export feedbacks
 		this.updateVariableDefinitions() // export variable definitions
 	}
@@ -96,7 +46,7 @@ export class ModuleInstance extends InstanceBase<ModuleConfig> {
 		const bridgeFinder = new BridgeFinder()
 		bridgeFinder.on('discovered', (bridgeInfo: BridgeNetInfo) => {
 			this.discoveredBridges[bridgeInfo.ipAddr] = bridgeInfo.bridgeid
-			this.log('info', `Discovered Bridge ${bridgeInfo.bridgeid} at ${bridgeInfo.ipAddr}`)
+			this.log('info', `Discovered Bridge ${bridgeInfo.bridgeid} at ${bridgeInfo.ipAddr}: ${bridgeInfo.systype}`)
 		})
 		bridgeFinder.beginSearching()
 	}
@@ -104,8 +54,8 @@ export class ModuleInstance extends InstanceBase<ModuleConfig> {
 	async pairWithBridge(): Promise<void> {
 		const client = new PairingClient(this.config.host, PAIRING_PORT)
 		try {
+			this.log('debug', 'Pairing client connecting')
 			await client.connect()
-			this.log('debug', 'Pairing client connected')
 		} catch (e: any) {
 			this.updateStatus(InstanceStatus.ConnectionFailure, `Failed to initialize pairing: ${e.message}`)
 			this.log('error', `Failed to initialize pairing: ${e.message}`)
@@ -113,6 +63,7 @@ export class ModuleInstance extends InstanceBase<ModuleConfig> {
 		}
 
 		// wait for pairing button to be pressed on bridge
+		this.log('info', 'Waiting for button press on bridge...')
 		try {
 			await new Promise<void>((resolve, reject) => {
 				const t = setTimeout(() => reject(new Error('timed out')), 30000) // Pairing window is 30 seconds, but companion has a 5s timeout
@@ -135,6 +86,7 @@ export class ModuleInstance extends InstanceBase<ModuleConfig> {
 		}
 
 		// generate  keys
+		this.log('debug', 'Generating keys for CSR')
 		const keys = await new Promise<forge.pki.rsa.KeyPair>((resolve, reject) => {
 			forge.pki.rsa.generateKeyPair({ bits: 2048 }, (err, keyPair) => {
 				if (err !== null) {
@@ -159,6 +111,7 @@ export class ModuleInstance extends InstanceBase<ModuleConfig> {
 		const csrText = forge.pki.certificationRequestToPem(csr)
 
 		// pair with bridge using csr
+		this.log('debug', 'Sending CSR to bridge for signing')
 		let certResult
 		try {
 			certResult = await new Promise<any>((resolve, reject) => {
@@ -181,19 +134,96 @@ export class ModuleInstance extends InstanceBase<ModuleConfig> {
 		}
 
 		// store cert/keys
-		this.config.ca = certResult.Body.SigningResult.RootCertificate
-		this.config.certificate = certResult.Body.SigningResult.Certificate
-		this.config.privateKey = forge.pki.privateKeyToPem(keys.privateKey)
-		this.saveConfig(this.config)
+		if (this.config.host in this.discoveredBridges) {
+			this.config.bridgeID = this.discoveredBridges[this.config.host]
+		} else {
+			this.config.bridgeID = UNKNOWN_BRIDGE_ID // id needs to be resolved later
+		}
+
+		this.log('debug', `using bridge id: ${this.config.bridgeID}`)
+
+		this.log('debug', 'Storing bridge certificates')
+		this.secrets.bridgeCerts = {
+			ca: certResult.Body.SigningResult.RootCertificate,
+			certificate: certResult.Body.SigningResult.Certificate,
+			privateKey: forge.pki.privateKeyToPem(keys.privateKey),
+		}
 	}
 
 	// When module gets deleted
 	async destroy(): Promise<void> {
 		this.log('debug', 'destroy')
+		this.bridge?.close()
 	}
 
-	async configUpdated(config: ModuleConfig): Promise<void> {
+	async configUpdated(config: ModuleConfig, secrets: ModuleSecrets): Promise<void> {
+		// this.log('debug', 'configUpdated')
+		const prevConfig = this.config
+		// this.log('debug', `Previous config: ${JSON.stringify(prevConfig)}`)
 		this.config = config
+		this.secrets = secrets
+		// this.log('debug', `New config: ${JSON.stringify(this.config)}`)
+		this.log('debug', this.config.host !== prevConfig.host ? 'host changed' : 'host unchanged')
+		if (this.config.host !== prevConfig.host) {
+			// host changed, need to re-pair
+			this.updateStatus(InstanceStatus.Connecting, 'Pairing with Bridge')
+			this.log('info', 'pairing...')
+			await this.pairWithBridge()
+		}
+
+		this.saveConfig(this.config, this.secrets)
+		this.log('debug', 're-initializing module')
+		await this.init(this.config, false, this.secrets)
+	}
+
+	async connectToBridge(): Promise<void> {
+		if (!this.config.bridgeID || !this.secrets.bridgeCerts) {
+			this.log('warn', 'No bridge ID or certificates found in config/secrets')
+			this.updateStatus(InstanceStatus.BadConfig, 'No valid configuration or pairing found')
+			return
+		}
+
+		this.log('debug', 'Connecting to bridge with id: ' + this.config.bridgeID)
+		this.updateStatus(InstanceStatus.Connecting, 'Connecting to Bridge')
+
+		const leapClient = new LeapClient(
+			this.config.host,
+			LEAP_PORT,
+			this.secrets.bridgeCerts.ca,
+			this.secrets.bridgeCerts.privateKey,
+			this.secrets.bridgeCerts.certificate,
+		)
+
+		try {
+			await leapClient.connect()
+		} catch (err: any) {
+			this.updateStatus(InstanceStatus.ConnectionFailure, `Bridge connection failed: ${err.message}`)
+			this.log('error', `Bridge connection failed: ${err.message}`)
+			return
+		}
+
+		this.bridge = new SmartBridge(this.config.bridgeID, leapClient)
+
+		// load devices
+		const devices = await this.bridge.getDeviceInfo()
+		devices.forEach((device) => {
+			if (device instanceof Error) {
+				this.log('error', `Error retrieving device: ${device.message}`)
+				return
+			} else if (this.config.bridgeID === UNKNOWN_BRIDGE_ID && device.DeviceType === 'SmartBridge') {
+				// We found our bridge device, update config
+				this.config.bridgeID = device.SerialNumber
+				this.saveConfig(this.config, this.secrets)
+			} else {
+				if (device.AssociatedArea) {
+					this.log('info', `${device.DeviceType} device found ${device.Name}.`)
+					this.devicesOnBridge.push(device)
+				}
+			}
+		})
+
+		this.log('debug', 'Loaded')
+		this.updateStatus(InstanceStatus.Ok)
 	}
 
 	// Return config fields for web config
@@ -201,8 +231,8 @@ export class ModuleInstance extends InstanceBase<ModuleConfig> {
 		return GetConfigFields(this.discoveredBridges)
 	}
 
-	updateActions(): void {
-		UpdateActions(this)
+	async updateActions(): Promise<void> {
+		await UpdateActions(this)
 	}
 
 	updateFeedbacks(): void {
