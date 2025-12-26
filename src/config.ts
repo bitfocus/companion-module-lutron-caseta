@@ -24,7 +24,7 @@ export function GetConfigFields(discoveredBridges: Record<string, string>): Some
 			width: 8,
 			label: 'Pairing Instructions',
 			value:
-				'Select your Lutron Bridge from the dropdown below, or enter in the IP address manually. Then after you hit Save, press the black pairing button on your Lutron Bridge. If it does not pair, turn the connection off and back on to re-initiate pairing, and press the button again.',
+				'Select your Lutron Bridge from the dropdown below, or enter in the IP address manually. Then after you hit Save, press the black pairing button on your Lutron Bridge.',
 		},
 		{
 			type: 'dropdown',
