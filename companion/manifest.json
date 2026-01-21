@@ -3,7 +3,7 @@
 	"name": "Lutron Caseta",
 	"shortname": "lutron-caseta",
 	"description": "Control Lutron devices connected to a compatible Lutron Smart Bridge",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"license": "MIT",
 	"repository": "git+https://github.com/bitfocus/companion-module-lutron-caseta.git",
 	"bugs": "https://github.com/bitfocus/companion-module-lutron-caseta/issues",
