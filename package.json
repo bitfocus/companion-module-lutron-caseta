@@ -28,7 +28,7 @@
 		"node-forge": "^1.4.0"
 	},
 	"devDependencies": {
-		"@companion-module/tools": "^2.6.1",
+		"@companion-module/tools": "^2.8.0",
 		"@types/node": "^22.18.13",
 		"@types/node-forge": "^1",
 		"eslint": "^9.39.0",
