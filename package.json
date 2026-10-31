@@ -25,7 +25,7 @@
 	"dependencies": {
 		"@companion-module/base": "^1.14.1",
 		"lutron-leap": "3.4.2",
-		"node-forge": "^1.4.0"
+		"node-forge": "^1.4.1"
 	},
 	"devDependencies": {
 		"@companion-module/tools": "^2.8.0",
