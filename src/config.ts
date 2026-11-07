@@ -1,9 +1,13 @@
 import { Regex, type SomeCompanionConfigField } from '@companion-module/base'
 
+export const DEFAULT_FADE_TIME = 4
+
 export interface ModuleConfig {
 	host: string
 	port: number
 	bridgeID?: string
+	defaultFadeTime?: number
+	includePicos?: boolean
 }
 
 export interface ModuleSecrets {
@@ -39,5 +43,25 @@ export function GetConfigFields(discoveredBridges: Record<string, string>): Some
 			regex: Regex.IP,
 			allowCustom: true,
 		} as SomeCompanionConfigField, // type assertion because description isn't in the base type definition
+		{
+			type: 'number',
+			id: 'defaultFadeTime',
+			label: 'Default Fade Time (seconds)',
+			tooltip: 'Used by dimmer actions that are set to use the module default fade time.',
+			width: 8,
+			default: DEFAULT_FADE_TIME,
+			min: 0,
+			max: 10,
+			step: 0.25,
+		},
+		{
+			type: 'checkbox',
+			id: 'includePicos',
+			label: 'Include Pico Remotes',
+			tooltip:
+				'Adds a feedback for each Pico button and last-button variables. Leave off if you do not use Picos in Companion.',
+			width: 8,
+			default: false,
+		},
 	]
 }
