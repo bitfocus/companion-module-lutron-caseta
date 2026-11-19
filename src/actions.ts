@@ -1,38 +1,75 @@
 import { CompanionActionDefinition } from '@companion-module/base'
 import type { ModuleInstance } from './main.js'
-import { DeviceDefinition, OneAreaDefinition } from 'lutron-leap'
+import { DeviceDefinition } from 'lutron-leap'
+import { DEFAULT_FADE_TIME } from './config.js'
 
 export async function UpdateActions(self: ModuleInstance): Promise<void> {
 	const deviceActions: Record<string, CompanionActionDefinition> = {}
 
-	await Promise.all(
-		self.devicesOnBridge.map(async (device) => {
-			try {
-				const response = await self.bridge?.getHref(device.AssociatedArea)
-
-				const areaName = (response as OneAreaDefinition).Area.Name
-				self.log('debug', `creating actions for ${areaName} ${device.Name}`)
-				const deviceKeyName = device.SerialNumber
-				if (
-					device.DeviceType === 'WallSwitch' ||
-					device.DeviceType === 'WallDimmer' ||
-					device.DeviceType === 'DivaSmartDimmer'
-				) {
-					deviceActions[`${deviceKeyName}_turn_on`] = createDimmerAction(self, areaName, device, 'on')
-					deviceActions[`${deviceKeyName}_turn_off`] = createDimmerAction(self, areaName, device, 'off')
-				}
-				if (device.DeviceType === 'WallDimmer' || device.DeviceType === 'DivaSmartDimmer') {
-					deviceActions[`${deviceKeyName}_set_brightness`] = createDimmerAction(self, areaName, device, 'brightness')
-				}
-			} catch (err) {
-				self.log('error', `Error getting area for device ${device.Name}: ${(err as Error).message}`)
-			}
-		}),
-	)
+	for (const device of self.devicesOnBridge) {
+		const areaName = self.areaNames.get(device.SerialNumber)
+		if (!areaName) {
+			self.log('warn', `No area name for device ${device.Name}, skipping its actions`)
+			continue
+		}
+		self.log('debug', `creating actions for ${areaName} ${device.Name}`)
+		const deviceKeyName = device.SerialNumber
+		if (
+			device.DeviceType === 'WallSwitch' ||
+			device.DeviceType === 'WallDimmer' ||
+			device.DeviceType === 'DivaSmartDimmer' ||
+			device.DeviceType === 'PlugInDimmer' ||
+			device.DeviceType === 'PlugInSwitch'
+		) {
+			deviceActions[`${deviceKeyName}_turn_on`] = createDimmerAction(self, areaName, device, 'on')
+			deviceActions[`${deviceKeyName}_turn_off`] = createDimmerAction(self, areaName, device, 'off')
+		}
+		if (
+			device.DeviceType === 'WallDimmer' ||
+			device.DeviceType === 'DivaSmartDimmer' ||
+			device.DeviceType === 'PlugInDimmer'
+		) {
+			deviceActions[`${deviceKeyName}_set_brightness`] = createDimmerAction(self, areaName, device, 'brightness')
+		}
+	}
 
 	self.setActionDefinitions({
 		...deviceActions,
+		...createSceneAction(self),
 	})
+}
+
+// fade time input is in seconds but needs to be formatted for the API. So 1.75 seconds becomes "00:00:01.7500"
+function formatFadeTime(seconds: number): string {
+	const totalMs = Math.round(Math.max(0, seconds) * 1000)
+	const whole = Math.floor(totalMs / 1000)
+	const frac = (totalMs % 1000) * 10 // milliseconds to ten-thousandths
+	return `00:00:${whole.toString().padStart(2, '0')}.${frac.toString().padStart(4, '0')}`
+}
+
+function createSceneAction(self: ModuleInstance): Record<string, CompanionActionDefinition> {
+	if (self.sceneButtons.length === 0) return {}
+	const choices = self.sceneButtons.map((scene) => ({ id: scene.href, label: scene.name }))
+	return {
+		activate_scene: {
+			name: 'Activate Scene',
+			options: [{ id: 'scene', type: 'dropdown', label: 'Scene', choices, default: choices[0].id }],
+			callback: async (event) => {
+				const href = event.options.scene as string
+				try {
+					self.log('debug', `Activating scene ${href}`)
+					const response = await self.bridge?.client.request('CreateRequest', `${href}/commandprocessor`, {
+						Command: { CommandType: 'PressAndRelease' },
+					})
+					if (!response?.Header.StatusCode?.code || response.Header.StatusCode.code > 299) {
+						self.log('error', `Error activating scene ${href}: ${JSON.stringify(response?.Header.StatusCode)}`)
+					}
+				} catch (err) {
+					self.log('error', `Error activating scene ${href}: ${(err as Error).message}`)
+				}
+			},
+		},
+	}
 }
 
 function createDimmerAction(
@@ -59,14 +96,21 @@ function createDimmerAction(
 	}
 
 	options.push({
+		id: 'use_default_fade',
+		type: 'checkbox',
+		label: 'Use module default fade time',
+		default: true,
+	})
+	options.push({
 		id: 'fade_time',
 		type: 'number',
 		label: 'Fade Time (seconds)',
-		default: 4,
+		default: DEFAULT_FADE_TIME,
 		min: 0,
 		max: 10,
 		step: 0.25,
 		range: true,
+		isVisible: (options) => !options.use_default_fade,
 	})
 
 	return {
@@ -75,9 +119,10 @@ function createDimmerAction(
 		callback: async (event) => {
 			const level = isOnOff ? fixedLevel : (event.options.brightness_value as number)
 
-			// fade time input is in seconds but needs to be formatted for the API. So 1.75 seconds becomes "00:00:01.7500"
-			const fadeTimeValue = (event.options.fade_time as number) || 0
-			const fadeTimeFormatted = `00:00:${Math.floor(fadeTimeValue).toString().padStart(2, '0')}.${((fadeTimeValue % 1) * 10000).toFixed(0).padStart(4, '0')}`
+			const fadeTimeValue = event.options.use_default_fade
+				? (self.config.defaultFadeTime ?? DEFAULT_FADE_TIME)
+				: (event.options.fade_time as number) || 0
+			const fadeTimeFormatted = formatFadeTime(fadeTimeValue)
 
 			try {
 				self.log('debug', `Setting ${device.Name} to ${level}% with fade time ${fadeTimeFormatted}`)
